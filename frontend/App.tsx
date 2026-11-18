@@ -118,7 +118,7 @@ export default function App() {
     {button('다시 시도', () => setRestoreAttempt(n => n + 1))}
     {button('저장된 로그인 지우고 로그인 화면으로', () => { void resetSavedLogin(); }, true)}
   </View></SafeAreaView>;
-  if (session) return <MainFlow session={session} onLogout={logout} authError={message} />;
+  if (session) return <MainFlow session={session} onLogout={logout} />;
   return <SafeAreaView style={styles.page}><StatusBar style="dark" />
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
