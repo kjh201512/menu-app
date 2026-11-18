@@ -1,0 +1,776 @@
+// ===== backend/src/main/java/com/menuapp/MenuApplication.java =====
+package com.menuapp;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+@SpringBootApplication
+public class MenuApplication {
+    public static void main(String[] args) { SpringApplication.run(MenuApplication.class, args); }
+}
+
+// ===== backend/src/main/java/com/menuapp/auth/AuthController.java =====
+package com.menuapp.auth;
+import com.menuapp.auth.AuthDtos.*;
+import jakarta.validation.Valid;
+import org.springframework.http.*;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+    private final AuthService service;
+    public AuthController(AuthService service) { this.service = service; }
+    @PostMapping("/signup")
+    public ResponseEntity<AuthResponse> signup(@Valid @RequestBody Credentials request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(service.signup(request));
+    }
+    @PostMapping("/login")
+    public AuthResponse login(@Valid @RequestBody Credentials request) { return service.login(request); }
+}
+
+// ===== backend/src/main/java/com/menuapp/auth/AuthDtos.java =====
+package com.menuapp.auth;
+import com.menuapp.common.CredentialsPolicy;
+import com.menuapp.common.ValidEmail;
+import com.menuapp.common.ValidPassword;
+public final class AuthDtos {
+    private AuthDtos() {}
+    public record Credentials(@ValidEmail String email, @ValidPassword String password) {
+        public Credentials { email = CredentialsPolicy.normalizeEmail(email); }
+    }
+    public record UserView(Long id, String email, String nickname) {}
+    public record AuthResponse(String accessToken, String tokenType, long expiresIn,
+                               UserView user, String nextScreen) {}
+}
+
+// ===== backend/src/main/java/com/menuapp/auth/AuthService.java =====
+package com.menuapp.auth;
+import com.menuapp.auth.AuthDtos.*;
+import com.menuapp.common.ApiException;
+import com.menuapp.security.JwtProvider;
+import com.menuapp.user.*;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+@Service
+public class AuthService {
+    private final UserRepository users;
+    private final PasswordEncoder encoder;
+    private final JwtProvider jwt;
+    private final String dummyHash;
+    public AuthService(UserRepository users, PasswordEncoder encoder, JwtProvider jwt) {
+        this.users = users; this.encoder = encoder; this.jwt = jwt;
+        this.dummyHash = encoder.encode("dummy-password-for-timing-only");
+    }
+    @Transactional
+    public AuthResponse signup(Credentials request) {
+        if (users.existsByEmail(request.email())) throw duplicateEmail();
+        User user;
+        try {
+            // DB UNIQUE 제약이 동시 가입을 최종 방어합니다. 실패 후 동일 트랜잭션에서 조회하지 않습니다.
+            user = users.saveAndFlush(new User(request.email(), encoder.encode(request.password()), "사용자"));
+        } catch (DataIntegrityViolationException e) {
+            if (isEmailConflict(e)) throw duplicateEmail();
+            throw e;
+        }
+        return response(user, "ONBOARDING");
+    }
+    @Transactional(readOnly = true)
+    public AuthResponse login(Credentials request) {
+        User user = users.findByEmail(request.email()).orElse(null);
+        boolean matches = encoder.matches(request.password(), user == null ? dummyHash : user.getPasswordHash());
+        if (user == null || !matches) throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "이메일 또는 비밀번호가 올바르지 않습니다.");
+        return response(user, "HOME");
+    }
+    private AuthResponse response(User user, String nextScreen) {
+        return new AuthResponse(jwt.issue(user.getId()), "Bearer", jwt.ttlSeconds(),
+            new UserView(user.getId(), user.getEmail(), user.getNickname()), nextScreen);
+    }
+    private ApiException duplicateEmail() {
+        return new ApiException(HttpStatus.CONFLICT, "EMAIL_ALREADY_EXISTS", "이미 가입된 이메일입니다. 로그인해 주세요.");
+    }
+    private boolean isEmailConflict(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.hibernate.exception.ConstraintViolationException constraint
+                    && constraint.getConstraintName() != null
+                    && constraint.getConstraintName().toLowerCase(java.util.Locale.ROOT).contains("uk_users_email")) return true;
+        }
+        return false;
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/security/JsonAuthenticationEntryPoint.java =====
+package com.menuapp.security;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.menuapp.common.ApiError;
+import jakarta.servlet.http.*;
+import java.io.IOException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.web.AuthenticationEntryPoint;
+import org.springframework.stereotype.Component;
+@Component
+public class JsonAuthenticationEntryPoint implements AuthenticationEntryPoint {
+    private final ObjectMapper mapper;
+    public JsonAuthenticationEntryPoint(ObjectMapper mapper) { this.mapper = mapper; }
+    @Override public void commence(HttpServletRequest request, HttpServletResponse response,
+                                   AuthenticationException exception) throws IOException {
+        response.setStatus(401);
+        response.setContentType("application/json;charset=UTF-8");
+        mapper.writeValue(response.getOutputStream(), ApiError.of("UNAUTHORIZED", "로그인이 필요하거나 인증이 만료되었습니다."));
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/security/JwtAuthenticationFilter.java =====
+package com.menuapp.security;
+import com.menuapp.user.UserRepository;
+import io.jsonwebtoken.JwtException;
+import jakarta.servlet.*;
+import jakarta.servlet.http.*;
+import java.io.IOException;
+import java.util.List;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+@Component
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+    private final JwtProvider jwt;
+    private final UserRepository users;
+    private final JsonAuthenticationEntryPoint entryPoint;
+    public JwtAuthenticationFilter(JwtProvider jwt, UserRepository users, JsonAuthenticationEntryPoint entryPoint) {
+        this.jwt = jwt; this.users = users; this.entryPoint = entryPoint;
+    }
+    @Override protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getServletPath();
+        return "OPTIONS".equals(request.getMethod()) || path.equals("/api/auth/signup") || path.equals("/api/auth/login");
+    }
+    @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                                               FilterChain chain) throws ServletException, IOException {
+        String header = request.getHeader("Authorization");
+        if (header == null) { chain.doFilter(request, response); return; }
+        try {
+            if (!header.startsWith("Bearer ") || header.substring(7).isBlank()) throw new BadCredentialsException("Invalid bearer header");
+            Long userId = jwt.parseUserId(header.substring(7));
+            if (!users.existsById(userId)) throw new BadCredentialsException("Unknown user");
+            var auth = new UsernamePasswordAuthenticationToken(userId, null, List.of());
+            auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+            SecurityContextHolder.getContext().setAuthentication(auth);
+        } catch (JwtException | IllegalArgumentException | BadCredentialsException e) {
+            SecurityContextHolder.clearContext();
+            entryPoint.commence(request, response, new BadCredentialsException("Invalid access token"));
+            return;
+        }
+        chain.doFilter(request, response);
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/security/JwtProvider.java =====
+package com.menuapp.security;
+import io.jsonwebtoken.*;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
+import java.time.Instant;
+import java.util.Date;
+import javax.crypto.SecretKey;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+@Component
+public class JwtProvider {
+    private static final String ISSUER = "menu-app";
+    private final SecretKey key;
+    private final long ttlSeconds;
+    public JwtProvider(@Value("${app.jwt.secret-base64}") String secret,
+                       @Value("${app.jwt.ttl-seconds}") long ttlSeconds) {
+        byte[] bytes = Decoders.BASE64.decode(secret);
+        if (bytes.length < 32) throw new IllegalArgumentException("JWT secret must be at least 32 bytes");
+        if (ttlSeconds <= 0) throw new IllegalArgumentException("JWT TTL must be positive");
+        this.key = Keys.hmacShaKeyFor(bytes);
+        this.ttlSeconds = ttlSeconds;
+    }
+    public String issue(Long userId) {
+        Instant now = Instant.now();
+        return Jwts.builder().issuer(ISSUER).subject(userId.toString())
+            .issuedAt(Date.from(now)).expiration(Date.from(now.plusSeconds(ttlSeconds)))
+            .signWith(key, Jwts.SIG.HS256).compact();
+    }
+    public Long parseUserId(String token) {
+        Jws<Claims> parsed = Jwts.parser().verifyWith(key).requireIssuer(ISSUER)
+            .build().parseSignedClaims(token);
+        if (!"HS256".equals(parsed.getHeader().getAlgorithm())) throw new IllegalArgumentException("Unexpected algorithm");
+        Claims claims = parsed.getPayload();
+        if (claims.getExpiration() == null || claims.getIssuedAt() == null) throw new IllegalArgumentException("Missing time claims");
+        long id = Long.parseLong(claims.getSubject());
+        if (id <= 0) throw new IllegalArgumentException("Invalid subject");
+        return id;
+    }
+    public long ttlSeconds() { return ttlSeconds; }
+}
+
+// ===== backend/src/main/java/com/menuapp/security/SecurityConfig.java =====
+package com.menuapp.security;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.menuapp.common.ApiError;
+import java.util.Arrays;
+import java.util.List;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.*;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.*;
+@Configuration
+public class SecurityConfig {
+    @Bean PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
+    @Bean SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationFilter jwtFilter,
+            JsonAuthenticationEntryPoint entryPoint, ObjectMapper mapper) throws Exception {
+        return http.csrf(csrf -> csrf.disable())
+            .cors(cors -> {})
+            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .formLogin(f -> f.disable()).httpBasic(h -> h.disable()).logout(l -> l.disable())
+            .authorizeHttpRequests(a -> a
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login").permitAll()
+                .requestMatchers("/error", "/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
+                .anyRequest().authenticated())
+            .exceptionHandling(e -> e.authenticationEntryPoint(entryPoint)
+                .accessDeniedHandler((req, res, ex) -> {
+                    res.setStatus(403); res.setContentType("application/json;charset=UTF-8");
+                    mapper.writeValue(res.getOutputStream(), ApiError.of("FORBIDDEN", "접근 권한이 없습니다."));
+                }))
+            .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class).build();
+    }
+    @Bean CorsConfigurationSource corsConfigurationSource(@Value("${app.cors.allowed-origins}") String origins) {
+        var configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(Arrays.stream(origins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList());
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+        configuration.setAllowCredentials(false);
+        var source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/common/ApiError.java =====
+package com.menuapp.common;
+import java.time.Instant;
+import java.util.Map;
+public record ApiError(String code, String message, Map<String, String> fieldErrors, Instant timestamp) {
+    public static ApiError of(String code, String message) {
+        return new ApiError(code, message, Map.of(), Instant.now());
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/common/ApiException.java =====
+package com.menuapp.common;
+import org.springframework.http.HttpStatus;
+public class ApiException extends RuntimeException {
+    private final HttpStatus status;
+    private final String code;
+    public ApiException(HttpStatus status, String code, String message) {
+        super(message); this.status = status; this.code = code;
+    }
+    public HttpStatus getStatus() { return status; }
+    public String getCode() { return code; }
+}
+
+// ===== backend/src/main/java/com/menuapp/common/CredentialsPolicy.java =====
+package com.menuapp.common;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
+import java.util.regex.Pattern;
+/** 이메일은 trim/lowercase 처리하지만 비밀번호는 원문을 그대로 비교합니다. */
+public final class CredentialsPolicy {
+    private static final Pattern EMAIL = Pattern.compile("^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$");
+    private CredentialsPolicy() {}
+    public static String normalizeEmail(String email) {
+        return email == null ? null : email.strip().toLowerCase(Locale.ROOT);
+    }
+    public static boolean validEmail(String value) {
+        if (value == null || value.length() > 254 || !EMAIL.matcher(value).matches()) return false;
+        int at = value.indexOf('@');
+        String local = value.substring(0, at);
+        if (local.length() > 64 || local.startsWith(".") || local.endsWith(".") || local.contains("..")) return false;
+        for (String label : value.substring(at + 1).split("\\.")) {
+            if (label.length() > 63) return false;
+        }
+        return true;
+    }
+    public static boolean validPassword(String password) {
+        return password != null && password.codePointCount(0, password.length()) >= 8
+            && !password.isBlank() && password.getBytes(StandardCharsets.UTF_8).length <= 72;
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/common/EmailValidator.java =====
+package com.menuapp.common;
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+public class EmailValidator implements ConstraintValidator<ValidEmail, String> {
+    public boolean isValid(String value, ConstraintValidatorContext context) {
+        return CredentialsPolicy.validEmail(value);
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/common/GlobalExceptionHandler.java =====
+package com.menuapp.common;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.*;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+    @ExceptionHandler(ApiException.class)
+    ResponseEntity<ApiError> api(ApiException e) {
+        return ResponseEntity.status(e.getStatus()).body(ApiError.of(e.getCode(), e.getMessage()));
+    }
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    ResponseEntity<ApiError> validation(MethodArgumentNotValidException e) {
+        Map<String, String> errors = new LinkedHashMap<>();
+        e.getBindingResult().getFieldErrors().forEach(f -> errors.putIfAbsent(f.getField(), f.getDefaultMessage()));
+        return ResponseEntity.badRequest().body(new ApiError("VALIDATION_ERROR", "입력값을 확인해 주세요.", errors, Instant.now()));
+    }
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ResponseEntity<ApiError> malformed() {
+        return ResponseEntity.badRequest().body(ApiError.of("INVALID_JSON", "요청 본문 형식을 확인해 주세요."));
+    }
+    @ExceptionHandler({org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class,
+        org.springframework.web.bind.MissingServletRequestParameterException.class})
+    ResponseEntity<ApiError> queryParameter(Exception e) {
+        return ResponseEntity.badRequest().body(ApiError.of("INVALID_PARAMETERS", "필수 쿼리 파라미터와 숫자 형식을 확인해 주세요."));
+    }
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    ResponseEntity<ApiError> methodNotAllowed() {
+        return ResponseEntity.status(405).body(ApiError.of("METHOD_NOT_ALLOWED", "지원하지 않는 요청 방식입니다."));
+    }
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    ResponseEntity<ApiError> notFound() {
+        return ResponseEntity.status(404).body(ApiError.of("NOT_FOUND", "요청한 경로가 없습니다."));
+    }
+    @ExceptionHandler(Exception.class)
+    ResponseEntity<ApiError> unexpected(Exception e) {
+        // 비밀번호/요청 본문/토큰은 기록하지 않습니다. DB 오류 문구도 외부에 노출하지 않습니다.
+        log.error("Unhandled request error: {}", e.getClass().getName());
+        return ResponseEntity.internalServerError().body(ApiError.of("INTERNAL_ERROR", "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."));
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/common/PasswordValidator.java =====
+package com.menuapp.common;
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+public class PasswordValidator implements ConstraintValidator<ValidPassword, String> {
+    public boolean isValid(String value, ConstraintValidatorContext context) {
+        return CredentialsPolicy.validPassword(value);
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/common/ValidEmail.java =====
+package com.menuapp.common;
+import jakarta.validation.Constraint;
+import jakarta.validation.Payload;
+import java.lang.annotation.*;
+@Documented
+@Constraint(validatedBy = EmailValidator.class)
+@Target({ElementType.FIELD, ElementType.PARAMETER, ElementType.RECORD_COMPONENT})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ValidEmail {
+    String message() default "올바른 이메일 형식을 입력해 주세요.";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+
+// ===== backend/src/main/java/com/menuapp/common/ValidPassword.java =====
+package com.menuapp.common;
+import jakarta.validation.Constraint;
+import jakarta.validation.Payload;
+import java.lang.annotation.*;
+@Documented
+@Constraint(validatedBy = PasswordValidator.class)
+@Target({ElementType.FIELD, ElementType.PARAMETER, ElementType.RECORD_COMPONENT})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ValidPassword {
+    String message() default "비밀번호는 8자 이상, UTF-8 기준 72바이트 이하로 입력해 주세요.";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+
+// ===== backend/src/main/java/com/menuapp/user/CurrentUserController.java =====
+package com.menuapp.user;
+import com.menuapp.auth.AuthDtos.UserView;
+import com.menuapp.common.ApiException;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.*;
+/** US-01 세션 복원을 위한 보조 엔드포인트입니다. US-04 프로필 API는 구현하지 않습니다. */
+@RestController
+public class CurrentUserController {
+    private final UserRepository users;
+    public CurrentUserController(UserRepository users) { this.users = users; }
+    @GetMapping("/api/users/me")
+    public UserView me(@AuthenticationPrincipal Long userId) {
+        User user = users.findById(userId).orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "다시 로그인해 주세요."));
+        return new UserView(user.getId(), user.getEmail(), user.getNickname());
+    }
+}
+
+// ===== backend/src/main/java/com/menuapp/user/User.java =====
+package com.menuapp.user;
+import jakarta.persistence.*;
+import java.time.Instant;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+@Entity
+@Table(name = "users", uniqueConstraints = @UniqueConstraint(name = "uk_users_email", columnNames = "email"))
+public class User {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "user_id")
+    private Long id;
+    @Column(nullable = false, length = 254)
+    private String email;
+    @Column(name = "password_hash", nullable = false, length = 100)
+    private String passwordHash;
+    @Column(nullable = false, length = 50)
+    private String nickname;
+    @JdbcTypeCode(SqlTypes.TIMESTAMP)
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+    @Column(name = "restrictions_completed", nullable = false)
+    private boolean restrictionsCompleted;
+    public boolean isRestrictionsCompleted() { return restrictionsCompleted; }
+    public void completeRestrictions() { restrictionsCompleted = true; }
+    protected User() {}
+    public User(String email, String passwordHash, String nickname) {
+        this.email = email;
+        this.passwordHash = passwordHash;
+        this.nickname = nickname;
+        this.createdAt = Instant.now();
+    }
+    public Long getId() { return id; }
+    public String getEmail() { return email; }
+    public String getPasswordHash() { return passwordHash; }
+    public String getNickname() { return nickname; }
+    public Instant getCreatedAt() { return createdAt; }
+}
+
+// ===== backend/src/main/java/com/menuapp/user/UserRepository.java =====
+package com.menuapp.user;
+import java.util.Optional;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.*;
+import org.springframework.data.repository.query.Param;
+public interface UserRepository extends JpaRepository<User, Long> {
+    boolean existsByEmail(String email);
+    Optional<User> findByEmail(String email);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from User u where u.id=:id")
+    Optional<User> lockById(@Param("id") Long id);
+}
+
+// ===== frontend/App.tsx =====
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, SafeAreaView,
+  ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { api, ApiError } from './src/api';
+import { clearSession, readSession, saveSession } from './src/session';
+import { normalizeEmail, validate, type FieldErrors } from './src/validation';
+import type { AuthResponse, Session } from './src/types';
+import { MainFlow } from './src/MainFlow';
+type Mode = 'login' | 'signup';
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [booting, setBooting] = useState(true);
+  const [restoreError, setRestoreError] = useState('');
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const lock = useRef(false);
+  const [mode, setMode] = useState<Mode>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [fields, setFields] = useState<FieldErrors>({});
+  const [message, setMessage] = useState('');
+  const [pendingAuth, setPendingAuth] = useState<AuthResponse | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    async function restore() {
+      setBooting(true); setRestoreError('');
+      try {
+        const saved = await readSession();
+        if (saved) {
+          try {
+            const user = await api.me(saved.accessToken);
+            if (active) setSession({ ...saved, user });
+          } catch (error) {
+            if (error instanceof ApiError && error.status === 401) {
+              await clearSession();
+              if (active) setMessage('인증이 만료되었습니다. 다시 로그인해 주세요.');
+            } else throw error;
+          }
+        }
+      } catch (error) {
+        if (active) setRestoreError(error instanceof Error ? error.message : '저장된 로그인을 확인하지 못했습니다.');
+      } finally { if (active) setBooting(false); }
+    }
+    void restore();
+    return () => { active = false; };
+  }, [restoreAttempt]);
+
+  function switchMode(next: Mode) {
+    if (lock.current) return;
+    setMode(next); setPassword(''); setConfirmation(''); setFields({}); setMessage('');
+    setShowPassword(false); setPendingAuth(null);
+  }
+  async function commitAuth(auth: AuthResponse) {
+    const next: Session = { accessToken: auth.accessToken, user: auth.user, destination: auth.nextScreen };
+    // 저장에 실패한 경우 메모리에만 결과를 보관하여 가입 요청을 중복 전송하지 않습니다.
+    try { await saveSession(next); }
+    catch { setPendingAuth(auth); setMessage('인증은 완료되었지만 안전한 저장에 실패했습니다. 아래 버튼으로 저장을 재시도해 주세요.'); return; }
+    setPendingAuth(null); setPassword(''); setConfirmation(''); setSession(next);
+  }
+  async function submit() {
+    if (lock.current) return;
+    const errors = pendingAuth ? {} : validate(email, password, mode === 'signup' ? confirmation : undefined);
+    setFields(errors); setMessage('');
+    if (Object.keys(errors).length) return;
+    lock.current = true; setBusy(true);
+    try {
+      const auth = pendingAuth ?? await api[mode](normalizeEmail(email), password);
+      await commitAuth(auth);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setFields(error.fieldErrors); setMessage(error.message);
+      } else setMessage('요청을 완료하지 못했습니다. 다시 시도해 주세요.');
+    } finally { lock.current = false; setBusy(false); }
+  }
+  async function logout() {
+    if (lock.current) return;
+    lock.current = true; setBusy(true); setMessage('');
+    try { await clearSession(); setSession(null); setPassword(''); setConfirmation(''); setMode('login'); }
+    catch { setMessage('로그인 정보를 지우지 못했습니다. 다시 시도해 주세요.'); }
+    finally { lock.current = false; setBusy(false); }
+  }
+  async function resetSavedLogin() {
+    if (lock.current) return;
+    lock.current = true; setBusy(true);
+    try { await clearSession(); setRestoreError(''); setSession(null); }
+    catch { setRestoreError('저장 정보를 지우지 못했습니다. 다시 시도해 주세요.'); }
+    finally { lock.current = false; setBusy(false); }
+  }
+  function field(label: string, value: string, onChange: (value: string) => void,
+                 key: 'email' | 'password' | 'confirmation', secret = false) {
+    return <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <TextInput value={value} onChangeText={onChange} editable={!busy && !pendingAuth}
+        placeholder={key === 'email' ? 'student@example.com' : key === 'password' ? '8자 이상 입력' : '비밀번호를 한 번 더 입력'}
+        placeholderTextColor="#9A9F9A" autoCapitalize="none" autoCorrect={false}
+        keyboardType={key === 'email' ? 'email-address' : 'default'}
+        textContentType={key === 'email' ? 'emailAddress' : mode === 'signup' ? 'newPassword' : 'password'}
+        secureTextEntry={secret && !showPassword} accessibilityLabel={label}
+        onSubmitEditing={() => { if (key !== 'email') void submit(); }}
+        style={[styles.input, fields[key] ? styles.invalid : undefined]} />
+      {!!fields[key] && <Text accessibilityRole="alert" style={styles.error}>{fields[key]}</Text>}
+    </View>;
+  }
+  const button = (label: string, action: () => void, secondary = false) =>
+    <Pressable onPress={action} disabled={busy} accessibilityRole="button" accessibilityLabel={label}
+      style={({ pressed }) => [styles.button, secondary && styles.secondary, (busy || pressed) && styles.dim]}>
+      {busy ? <ActivityIndicator color={secondary ? '#34704F' : '#FFFFFF'} /> :
+        <Text style={[styles.buttonText, secondary && styles.secondaryText]}>{label}</Text>}
+    </Pressable>;
+
+  if (booting) return <SafeAreaView style={styles.center}><ActivityIndicator size="large" color="#34704F" /><Text style={styles.help}>로그인 정보를 확인하고 있어요.</Text></SafeAreaView>;
+  if (restoreError) return <SafeAreaView style={styles.page}><View style={styles.content}>
+    <Text style={styles.title}>연결을 확인해 주세요</Text><Text style={styles.subtitle}>{restoreError}</Text>
+    {button('다시 시도', () => setRestoreAttempt(n => n + 1))}
+    {button('저장된 로그인 지우고 로그인 화면으로', () => { void resetSavedLogin(); }, true)}
+  </View></SafeAreaView>;
+  if (session) return <MainFlow session={session} onLogout={logout} authError={message} />;
+  return <SafeAreaView style={styles.page}><StatusBar style="dark" />
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+      <Text style={styles.brand}>오늘 한 끼</Text><View style={styles.tag}><Text style={styles.tagText}>고민은 줄이고, 취향은 담고</Text></View>
+      <Text style={styles.title}>{mode === 'signup' ? '나만의 한 끼를\n시작해 보세요' : '반가워요!\n오늘도 맛있는 선택'}</Text>
+      <Text style={styles.subtitle}>계정에 취향을 저장하고, 다음 식사는 더 편하게.</Text>
+      <View style={styles.tabs}>
+        {(['login', 'signup'] as const).map(tab => <Pressable key={tab} onPress={() => switchMode(tab)}
+          disabled={busy} accessibilityRole="tab" accessibilityState={{ selected: mode === tab }}
+          style={[styles.tab, mode === tab && styles.activeTab]}>
+          <Text style={[styles.tabText, mode === tab && styles.activeTabText]}>{tab === 'login' ? '로그인' : '회원가입'}</Text>
+        </Pressable>)}
+      </View>
+      {field('이메일', email, setEmail, 'email')}
+      {field('비밀번호', password, setPassword, 'password', true)}
+      {mode === 'signup' && field('비밀번호 확인', confirmation, setConfirmation, 'confirmation', true)}
+      <Pressable onPress={() => setShowPassword(value => !value)} accessibilityRole="button" style={styles.showPassword}>
+        <Text style={styles.link}>{showPassword ? '비밀번호 숨기기' : '비밀번호 보기'}</Text>
+      </Pressable>
+      {!!message && <View style={styles.errorBox}><Text accessibilityRole="alert" style={styles.error}>{message}</Text></View>}
+      {button(pendingAuth ? '인증 정보 저장 다시 시도' : mode === 'signup' ? '가입하고 취향 설정하기' : '로그인', () => { void submit(); })}
+      <Text style={styles.help}>{mode === 'signup' ? '가입 후 취향 설정 화면으로 이동합니다.' : '이메일과 비밀번호로 안전하게 로그인하세요.'}</Text>
+    </ScrollView></KeyboardAvoidingView>
+  </SafeAreaView>;
+}
+const styles = StyleSheet.create({
+  flex: { flex: 1 }, page: { flex: 1, backgroundColor: '#F6F8F3' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F6F8F3' },
+  content: { padding: 26, paddingTop: 36, paddingBottom: 48, flexGrow: 1, width: '100%', maxWidth: 540, alignSelf: 'center' },
+  brand: { color: '#24523A', fontWeight: '800', fontSize: 21, marginBottom: 28 },
+  tag: { alignSelf: 'flex-start', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#E6EEDC', marginBottom: 18 },
+  tagText: { color: '#406045', fontSize: 12, fontWeight: '600' },
+  title: { fontSize: 30, lineHeight: 41, fontWeight: '800', color: '#202F26', marginBottom: 12 },
+  subtitle: { color: '#657268', fontSize: 14, lineHeight: 23, marginBottom: 25 },
+  tabs: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#DCE2D9', marginBottom: 25 },
+  tab: { flex: 1, alignItems: 'center', padding: 14, borderBottomWidth: 3, borderBottomColor: 'transparent' },
+  activeTab: { borderBottomColor: '#34704F' }, tabText: { color: '#7C867D', fontWeight: '600', fontSize: 15 },
+  activeTabText: { color: '#24523A' }, field: { marginBottom: 17 },
+  label: { fontSize: 13, fontWeight: '600', color: '#394B3D', marginBottom: 8 },
+  input: { borderWidth: 1, borderColor: '#D9E0D5', borderRadius: 13, backgroundColor: '#FFFFFF', padding: 15, fontSize: 16, color: '#202F26' },
+  invalid: { borderColor: '#B54136' }, error: { color: '#A63329', fontSize: 13, lineHeight: 20, marginTop: 6 },
+  errorBox: { padding: 12, backgroundColor: '#FBEDE8', borderRadius: 12, marginBottom: 10 },
+  showPassword: { alignSelf: 'flex-end', paddingVertical: 10, paddingHorizontal: 4, marginBottom: 7 },
+  link: { color: '#34704F', fontSize: 13, fontWeight: '600' },
+  button: { backgroundColor: '#34704F', borderRadius: 14, padding: 17, alignItems: 'center', marginTop: 10, minHeight: 55 },
+  buttonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  secondary: { backgroundColor: '#E6EEDC' }, secondaryText: { color: '#24523A' }, dim: { opacity: 0.6 },
+  help: { marginTop: 17, color: '#69766B', fontSize: 12, lineHeight: 20, textAlign: 'center' },
+  card: { borderRadius: 16, backgroundColor: '#FFFFFF', padding: 21, marginBottom: 18 }, account: { fontSize: 16, color: '#24523A' },
+});
+
+// ===== frontend/src/session.ts =====
+import * as SecureStore from 'expo-secure-store';
+import type { Session } from './types';
+const KEY = 'menu-app.session.v1';
+export async function saveSession(session: Session): Promise<void> {
+  await SecureStore.setItemAsync(KEY, JSON.stringify(session));
+}
+export async function readSession(): Promise<Session | null> {
+  const value = await SecureStore.getItemAsync(KEY);
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<Session>;
+    if (typeof parsed.accessToken !== 'string' || !parsed.accessToken ||
+        !parsed.user || !Number.isSafeInteger(parsed.user.id) || typeof parsed.user.email !== 'string' ||
+        (parsed.destination !== 'ONBOARDING' && parsed.destination !== 'HOME')) throw new Error('Invalid session');
+    return parsed as Session;
+  } catch { await clearSession(); return null; }
+}
+export async function clearSession(): Promise<void> { await SecureStore.deleteItemAsync(KEY); }
+
+// ===== frontend/src/validation.js =====
+// Java CredentialsPolicy와 동일한 MVP 이메일/비밀번호 정책. 비밀번호는 trim 금지.
+const EMAIL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+function normalizeEmail(email) { return email.trim().toLowerCase(); }
+function validEmail(raw) {
+  const email = normalizeEmail(raw);
+  if (email.length > 254 || !EMAIL.test(email)) return false;
+  const [local, domain] = email.split('@');
+  return local.length <= 64 && !local.startsWith('.') && !local.endsWith('.') && !local.includes('..')
+    && domain.split('.').every(label => label.length <= 63);
+}
+function utf8Bytes(value) {
+  let size = 0;
+  for (const char of value) {
+    const point = char.codePointAt(0);
+    size += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+  }
+  return size;
+}
+function validate(email, password, confirmation) {
+  const errors = {};
+  if (!validEmail(email)) errors.email = '올바른 이메일 형식을 입력해 주세요.';
+  if ([...password].length < 8 || password.trim().length === 0 || utf8Bytes(password) > 72)
+    errors.password = '비밀번호는 8자 이상, UTF-8 기준 72바이트 이하로 입력해 주세요.';
+  if (confirmation !== undefined && password !== confirmation)
+    errors.confirmation = '비밀번호가 일치하지 않습니다.';
+  return errors;
+}
+module.exports = { normalizeEmail, validEmail, utf8Bytes, validate };
+
+// ===== frontend/src/validation.d.ts =====
+export type FieldErrors = Partial<Record<'email' | 'password' | 'confirmation', string>>;
+export function normalizeEmail(email: string): string;
+export function validEmail(email: string): boolean;
+export function utf8Bytes(value: string): number;
+export function validate(email: string, password: string, confirmation?: string): FieldErrors;
+
+// ===== frontend/src/types.ts =====
+export type User = { id: number; email: string; nickname: string };
+export type Destination = 'ONBOARDING' | 'HOME';
+export type AuthResponse = { accessToken: string; tokenType: 'Bearer'; expiresIn: number; user: User; nextScreen: Destination };
+export type Session = { accessToken: string; user: User; destination: Destination };
+export type Category = 'KOREAN' | 'JAPANESE' | 'CHINESE' | 'WESTERN' | 'SNACK' | 'ASIAN' | 'SALAD';
+export type RestrictionType = 'ALLERGY' | 'DISLIKE';
+export type Restriction = { ingredientName: string; type: RestrictionType };
+export type Profile = { preferences: Category[]; restrictions: Restriction[]; restrictionsCompleted: boolean; onboardingCompleted: boolean };
+export type MenuCard = { menuId: number; restaurantId: number; menuName: string; restaurantName: string;
+  category: Category; price: number; distanceMeters: number; preferred: boolean; ingredients: string[] };
+export type Recommendations = { sessionId: string; count: number; availableCount: number; message: string; items: MenuCard[] };
+
+// ===== frontend/src/api.ts =====
+import type { AuthResponse, User, Category, Restriction, Profile, Recommendations } from './types';
+const rawBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+const baseUrl = rawBaseUrl?.replace(/\/$/, '');
+export class ApiError extends Error {
+  constructor(public status: number, public code: string, message: string,
+              public fieldErrors: Record<string, string> = {}) { super(message); }
+}
+async function request<T>(path: string, method: 'POST' | 'GET' | 'PUT', body?: unknown, token?: string): Promise<T> {
+  if (!baseUrl) throw new ApiError(0, 'CONFIG_ERROR', '.env의 EXPO_PUBLIC_API_BASE_URL을 설정해 주세요.');
+  if (!__DEV__ && !baseUrl.startsWith('https://'))
+    throw new ApiError(0, 'CONFIG_ERROR', '배포 앱은 HTTPS API 주소를 사용해야 합니다.');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(baseUrl + path, {
+      method, signal: controller.signal,
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+                 ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) throw new ApiError(response.status, data?.code ?? 'HTTP_ERROR',
+      data?.message ?? '요청을 처리하지 못했습니다.', data?.fieldErrors ?? {});
+    if (data === null) throw new ApiError(response.status, 'INVALID_RESPONSE', '서버 응답 형식을 확인해 주세요.');
+    return data as T;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (controller.signal.aborted) throw new ApiError(0, 'TIMEOUT', '요청 시간이 초과되었습니다. 다시 시도해 주세요.');
+    throw new ApiError(0, 'NETWORK_ERROR', '서버에 연결할 수 없습니다. 네트워크와 API 주소를 확인해 주세요.');
+  } finally { clearTimeout(timer); }
+}
+export const api = {
+  signup: (email: string, password: string) => request<AuthResponse>('/api/auth/signup', 'POST', { email, password }),
+  login: (email: string, password: string) => request<AuthResponse>('/api/auth/login', 'POST', { email, password }),
+  me: (token: string) => request<User>('/api/users/me', 'GET', undefined, token),
+  profile: (token: string) => request<Profile>('/api/users/me/profile', 'GET', undefined, token),
+  preferences: (token: string, categories: Category[]) => request<Profile>('/api/users/me/preferences', 'PUT', { categories }, token),
+  restrictions: (token: string, items: Restriction[]) => request<Profile>('/api/users/me/restrictions', 'PUT', { items }, token),
+  recommendations: (token: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`, 'GET', undefined, token),
+};
+
+-- ===== backend/src/main/resources/db/migration/V1__create_users.sql =====
+CREATE TABLE users (
+    user_id BIGINT NOT NULL AUTO_INCREMENT,
+    email VARCHAR(254) NOT NULL,
+    password_hash VARCHAR(100) NOT NULL,
+    nickname VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL,
+    PRIMARY KEY (user_id),
+    CONSTRAINT uk_users_email UNIQUE (email)
+);
