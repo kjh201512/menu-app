@@ -1,0 +1,11 @@
+export type User = { id: number; email: string; nickname: string };
+export type Destination = 'ONBOARDING' | 'HOME';
+export type AuthResponse = { accessToken: string; tokenType: 'Bearer'; expiresIn: number; user: User; nextScreen: Destination };
+export type Session = { accessToken: string; user: User; destination: Destination };
+export type Category = 'KOREAN' | 'JAPANESE' | 'CHINESE' | 'WESTERN' | 'SNACK' | 'ASIAN' | 'SALAD';
+export type RestrictionType = 'ALLERGY' | 'DISLIKE';
+export type Restriction = { ingredientName: string; type: RestrictionType };
+export type Profile = { preferences: Category[]; restrictions: Restriction[]; restrictionsCompleted: boolean; onboardingCompleted: boolean };
+export type MenuCard = { menuId: number; restaurantId: number; menuName: string; restaurantName: string;
+  category: Category; price: number; distanceMeters: number; preferred: boolean; ingredients: string[] };
+export type Recommendations = { sessionId: string; count: number; availableCount: number; message: string; items: MenuCard[] };
