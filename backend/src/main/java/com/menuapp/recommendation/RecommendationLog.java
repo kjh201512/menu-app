@@ -15,4 +15,9 @@ public class RecommendationLog {
     @JdbcTypeCode(SqlTypes.TIMESTAMP) @Column(name="created_at",nullable=false) private Instant createdAt;
     protected RecommendationLog() {}
     public RecommendationLog(User user,Menu menu,String sessionId) { this.user=user;this.menu=menu;this.sessionId=sessionId;this.status=Status.SHOWN;this.createdAt=Instant.now(); }
+    public Long getId() { return id; }
+    public Menu getMenu() { return menu; }
+    public String getSessionId() { return sessionId; }
+    public Status getStatus() { return status; }
+    public void select() { this.status = Status.SELECTED; }
 }

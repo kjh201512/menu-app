@@ -12,6 +12,7 @@ public class RecommendationService {
     public record Card(Long menuId,Long restaurantId,String menuName,String restaurantName,Category category,
                        int price,long distanceMeters,boolean preferred,List<String> ingredients) {}
     public record Result(String sessionId,int count,int availableCount,String message,List<Card> items) {}
+    public record Selection(String sessionId, Long menuId, Long restaurantId, String menuName, String restaurantName) {}
     private record Candidate(Menu menu,double distance,double weight) {}
     private final UserRepository users;
     private final UserPreferenceRepository preferences;
@@ -46,5 +47,19 @@ public class RecommendationService {
         String message=cards.isEmpty()?"조건에 맞는 메뉴가 없습니다. 알레르기 필터는 완화하지 않았습니다.":
             cards.size()<3?"조건에 맞는 메뉴가 "+cards.size()+"개뿐입니다. 가능한 메뉴만 표시합니다.":"등록된 제한 식재료를 제외한 메뉴입니다.";
         return new Result(sessionId,cards.size(),candidates.size(),message,cards);
+    }
+        @Transactional
+    public Selection select(Long userId, String sessionId, Long menuId) {
+        List<RecommendationLog> session = logs.findSession(userId, sessionId);
+        if (session.isEmpty())
+            throw new ApiException(HttpStatus.NOT_FOUND, "RECOMMENDATION_NOT_FOUND", "추천 기록을 찾을 수 없습니다. 추천을 다시 받아 주세요.");
+        RecommendationLog chosen = session.stream().filter(l -> l.getMenu().getId().equals(menuId)).findFirst()
+            .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "MENU_NOT_RECOMMENDED", "추천된 메뉴 중에서만 선택할 수 있습니다."));
+        boolean otherSelected = session.stream().anyMatch(l -> l != chosen && l.getStatus() == RecommendationLog.Status.SELECTED);
+        if (otherSelected)
+            throw new ApiException(HttpStatus.CONFLICT, "ALREADY_SELECTED", "이미 다른 메뉴를 선택했습니다. 추천을 다시 받아 주세요.");
+        chosen.select();
+        Menu menu = chosen.getMenu();
+        return new Selection(sessionId, menu.getId(), menu.getRestaurant().getId(), menu.getName(), menu.getRestaurant().getName());
     }
 }
