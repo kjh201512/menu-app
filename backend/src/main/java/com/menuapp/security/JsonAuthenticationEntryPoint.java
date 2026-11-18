@@ -1,5 +1,5 @@
 package com.menuapp.security;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.menuapp.common.ApiError;
 import jakarta.servlet.http.*;
 import java.io.IOException;
