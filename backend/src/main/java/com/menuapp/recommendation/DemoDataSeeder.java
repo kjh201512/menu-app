@@ -13,11 +13,11 @@ public class DemoDataSeeder implements ApplicationRunner {
     public DemoDataSeeder(RestaurantRepository restaurants,MenuRepository menus) { this.restaurants=restaurants;this.menus=menus; }
     @Override @Transactional public void run(ApplicationArguments args) {
         if (restaurants.existsByExternalPlaceId("demo-korean")) return;
-        Restaurant korean=restaurants.save(new Restaurant("demo-korean","데모 한식당",37.5670,126.9783,Category.KOREAN));
-        Restaurant japanese=restaurants.save(new Restaurant("demo-japanese","데모 일본식당",37.5660,126.9788,Category.JAPANESE));
-        Restaurant western=restaurants.save(new Restaurant("demo-western","데모 양식당",37.5680,126.9790,Category.WESTERN));
-        Restaurant salad=restaurants.save(new Restaurant("demo-salad","데모 샐러드집",37.5668,126.9775,Category.SALAD));
-        Restaurant far=restaurants.save(new Restaurant("demo-far","반경 밖 데모 식당",37.6000,126.9780,Category.KOREAN));
+        Restaurant korean=restaurants.save(new Restaurant("demo-korean","데모 한식당",37.5670,126.9783,Category.KOREAN,"10:30-21:00"));
+        Restaurant japanese=restaurants.save(new Restaurant("demo-japanese","데모 일본식당",37.5660,126.9788,Category.JAPANESE,"11:30-21:00"));
+        Restaurant western=restaurants.save(new Restaurant("demo-western","데모 양식당",37.5680,126.9790,Category.WESTERN,"22:00-04:00"));
+        Restaurant salad=restaurants.save(new Restaurant("demo-salad","데모 샐러드집",37.5668,126.9775,Category.SALAD,null));
+        Restaurant far=restaurants.save(new Restaurant("demo-far","반경 밖 데모 식당",37.6000,126.9780,Category.KOREAN,"10:00-22:00"));
         menus.saveAll(List.of(
             new Menu(korean,"채소 비빔밥",Category.KOREAN,8500,true,List.of("쌀","당근","시금치","참기름")),
             new Menu(korean,"소고기 덮밥",Category.KOREAN,10000,true,List.of("쌀","소고기","대두","밀")),

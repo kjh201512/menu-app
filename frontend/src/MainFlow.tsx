@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { api, ApiError } from './api';
 import { CATEGORY_LABELS, PRESET_INGREDIENTS } from './catalog';
 import { addRestriction, validCoordinates } from './profileRules';
 import { RecommendationCards } from './RecommendationCards';
-import type { Category, MenuCard, Profile, Recommendations, Restriction, RestrictionType, Selection, Session } from './types';
+import type { Category, MenuCard, Profile, Recommendations, Restriction, RestaurantDetail, RestrictionType, Selection, Session } from './types';
 type Screen = 'PREFERENCES' | 'RESTRICTIONS' | 'HOME' | 'RECOMMENDATIONS' | 'SELECTED';
 export function MainFlow({ session, onLogout }: { session: Session; onLogout: () => Promise<void> }) {
   const [screen, setScreen] = useState<Screen>(session.destination === 'ONBOARDING' ? 'PREFERENCES' : 'HOME');
@@ -21,6 +21,7 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   const [initializing, setInitializing] = useState(true);
   const [recommendations, setRecommendations] = useState<Recommendations | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [detail, setDetail] = useState<RestaurantDetail | null>(null);
   const [lat, setLat] = useState('37.5665');
   const [lng, setLng] = useState('126.9780');
   const lock = useRef(false);
@@ -75,7 +76,11 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   }
   async function choose(item: MenuCard) {
     if (!recommendations) return;
-    await run(async () => { const chosen = await api.select(token, recommendations.sessionId, item.menuId); setSelection(chosen); setScreen('SELECTED'); });
+    await run(async () => {
+      const chosen = await api.select(token, recommendations.sessionId, item.menuId);
+      const info = await api.restaurant(token, chosen.restaurantId, Number(lat), Number(lng));
+      setSelection(chosen); setDetail(info); setScreen('SELECTED');
+    });
   }
   const button = (text: string, action: () => void, secondary = false, disabled = false) => <Pressable
     accessibilityRole="button" accessibilityLabel={text} disabled={busy || disabled} onPress={action}
@@ -137,10 +142,16 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
         {button('홈으로 돌아가기', () => go('HOME'), true)}
       </>}
       {screen === 'SELECTED' && selection && <>
-        <Text style={s.step}>US-08 · 선택 완료</Text><Text style={s.title}>오늘은 이 메뉴로 결정!</Text>
-        <View style={s.panel}><Text style={s.label}>선택한 메뉴</Text><Text style={s.summary}>{selection.menuName}</Text>
-          <Text style={s.label}>식당</Text><Text style={s.summary}>{selection.restaurantName}</Text></View>
-        <Text style={s.hint}>식당 상세 정보와 지도 연결은 다음 단계(US-11)에서 이어집니다.</Text>
+        <Text style={s.step}>US-08 · US-11 · 식당 상세</Text><Text style={s.title}>오늘은 이 메뉴로 결정!</Text>
+        <View style={s.panel}>
+          <Text style={s.label}>선택한 메뉴</Text><Text style={s.summary}>{selection.menuName}</Text>
+          <Text style={s.label}>식당</Text><Text style={s.summary}>{selection.restaurantName}{detail ? ` · ${CATEGORY_LABELS[detail.category]}` : ''}</Text>
+          <Text style={s.label}>거리</Text><Text style={s.summary}>{detail?.distanceMeters != null ? `${detail.distanceMeters.toLocaleString()} m · 직선거리` : '정보 없음'}</Text>
+          <Text style={s.label}>영업시간</Text><Text style={s.summary}>{detail?.businessHours ?? '정보 없음'}</Text>
+          <Text style={[s.status, detail?.openStatus === 'OPEN' ? s.open : detail?.openStatus === 'CLOSED' ? s.closed : s.unknown]}>{detail?.openStatusLabel ?? '정보 없음'}</Text>
+          <Text style={s.label}>대표 메뉴</Text><Text style={s.summary}>{detail?.signatureMenus.length ? detail.signatureMenus.join(' · ') : '정보 없음'}</Text>
+        </View>
+        {detail && button('지도에서 위치 보기', () => { void Linking.openURL(detail.mapUrl); })}
         {button('홈으로 돌아가기', () => go('HOME'), true)}
       </>}
       {busy && <ActivityIndicator color="#34704F" style={{ marginTop: 16 }} />}
@@ -164,5 +175,5 @@ const s = StyleSheet.create({
   input: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D7E1D2', padding: 14, borderRadius: 12, marginBottom: 10, color: '#233D2B', fontSize: 15 },
   inline: { flexDirection: 'row', gap: 10 }, add: { backgroundColor: '#34704F', borderRadius: 12, paddingHorizontal: 18, height: 50, justifyContent: 'center' },
   item: { padding: 13, backgroundColor: '#FFFFFF', borderRadius: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 8 }, itemName: { fontWeight: '700', color: '#284833', fontSize: 15 },
-  error: { color: '#AE3D30', backgroundColor: '#FBEBE6', padding: 13, borderRadius: 12, lineHeight: 22, marginTop: 18 }, panel: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 20 }, summary: { color: '#4D6655', lineHeight: 24, marginBottom: 8 },
+  error: { color: '#AE3D30', backgroundColor: '#FBEBE6', padding: 13, borderRadius: 12, lineHeight: 22, marginTop: 18 }, panel: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 20 }, summary: { color: '#4D6655', lineHeight: 24, marginBottom: 8 },   status: { alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 10, fontSize: 13, fontWeight: '700', overflow: 'hidden', marginBottom: 6 }, open: { backgroundColor: '#E3F1E4', color: '#2F6B3E' }, closed: { backgroundColor: '#FBEBE6', color: '#AE3D30' }, unknown: { backgroundColor: '#EEF0EC', color: '#6A746D' },
 });

@@ -18,4 +18,10 @@ public class Restaurant {
     public String getName() { return name; }
     public double getLatitude() { return latitude; }
     public double getLongitude() { return longitude; }
+    public Restaurant(String externalPlaceId,String name,double latitude,double longitude,Category category,String businessHours) {
+        this(externalPlaceId,name,latitude,longitude,category);
+        this.businessHours=businessHours;
+    }
+    public Category getCategory() { return category; }
+    public String getBusinessHours() { return businessHours; }
 }

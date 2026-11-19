@@ -10,3 +10,4 @@ export type MenuCard = { menuId: number; restaurantId: number; menuName: string;
   category: Category; price: number; distanceMeters: number; preferred: boolean; ingredients: string[] };
 export type Recommendations = { sessionId: string; count: number; availableCount: number; message: string; items: MenuCard[] };
 export type Selection = { sessionId: string; menuId: number; restaurantId: number; menuName: string; restaurantName: string };
+export type RestaurantDetail = { restaurantId: number; name: string; category: Category; distanceMeters: number | null; businessHours: string | null; openStatus: 'OPEN' | 'CLOSED' | 'UNKNOWN'; openStatusLabel: string; signatureMenus: string[]; mapUrl: string };
