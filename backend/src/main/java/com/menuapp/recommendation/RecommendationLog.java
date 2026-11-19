@@ -20,4 +20,5 @@ public class RecommendationLog {
     public String getSessionId() { return sessionId; }
     public Status getStatus() { return status; }
     public void select() { this.status = Status.SELECTED; }
+    public void reject() { this.status = Status.REJECTED; }
 }

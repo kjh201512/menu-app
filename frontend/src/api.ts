@@ -37,6 +37,7 @@ export const api = {
   preferences: (token: string, categories: Category[]) => request<Profile>('/api/users/me/preferences', 'PUT', { categories }, token),
   restrictions: (token: string, items: Restriction[]) => request<Profile>('/api/users/me/restrictions', 'PUT', { items }, token),
   recommendations: (token: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`, 'GET', undefined, token),
-    select: (token: string, sessionId: string, menuId: number) => request<Selection>(`/api/recommendations/${encodeURIComponent(sessionId)}/select`, 'POST', { menuId }, token),
-      restaurant: (token: string, restaurantId: number, lat: number, lng: number) => request<RestaurantDetail>(`/api/restaurants/${restaurantId}?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`, 'GET', undefined, token),
+  select: (token: string, sessionId: string, menuId: number) => request<Selection>(`/api/recommendations/${encodeURIComponent(sessionId)}/select`, 'POST', { menuId }, token),
+  restaurant: (token: string, restaurantId: number, lat: number, lng: number) => request<RestaurantDetail>(`/api/restaurants/${restaurantId}?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`, 'GET', undefined, token),
+  reject: (token: string, sessionId: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations/${encodeURIComponent(sessionId)}/reject`, 'POST', { lat, lng }, token),
 };

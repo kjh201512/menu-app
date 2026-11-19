@@ -22,6 +22,7 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   const [recommendations, setRecommendations] = useState<Recommendations | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [detail, setDetail] = useState<RestaurantDetail | null>(null);
+  const [round, setRound] = useState(0);
   const [lat, setLat] = useState('37.5665');
   const [lng, setLng] = useState('126.9780');
   const lock = useRef(false);
@@ -82,6 +83,13 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
       setSelection(chosen); setDetail(info); setScreen('SELECTED');
     });
   }
+  async function another() {
+    if (!recommendations) return;
+    await run(async () => {
+      const next = await api.reject(token, recommendations.sessionId, Number(lat), Number(lng));
+      setRecommendations(next); setRound(n => n + 1);
+    });
+  }
   const button = (text: string, action: () => void, secondary = false, disabled = false) => <Pressable
     accessibilityRole="button" accessibilityLabel={text} disabled={busy || disabled} onPress={action}
     style={[s.button, secondary && s.secondary, (busy || disabled) && s.dim]}>
@@ -137,7 +145,8 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
       {screen === 'RECOMMENDATIONS' && recommendations && <>
         <Text style={s.step}>US-07 · 반경 1 km 이내</Text><Text style={s.title}>이 메뉴는 어때요?</Text>
         <Text style={s.description}>{recommendations.message}</Text>
-        <RecommendationCards key={recommendations.sessionId} items={recommendations.items} onSelect={item => { void choose(item); }} disabled={busy} />
+        <RecommendationCards key={`${recommendations.sessionId}-${round}`} items={recommendations.items} onSelect={item => { void choose(item); }} disabled={busy} />
+        {button('다른 메뉴 보기', () => { void another(); }, false, recommendations.count === 0)}
         <Text style={s.hint}>식당·메뉴 정보가 완전하다고 표시된 후보만 추천합니다. 실제 안전을 보증하지 않습니다.</Text>
         {button('홈으로 돌아가기', () => go('HOME'), true)}
       </>}
