@@ -1,4 +1,4 @@
-import type { AuthResponse, User, Category, Restriction, Profile, Recommendations } from './types';
+import type { AuthResponse, User, Category, Restriction, Profile, Recommendations, Selection } from './types';
 const rawBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
 const baseUrl = rawBaseUrl?.replace(/\/$/, '');
 export class ApiError extends Error {
@@ -37,4 +37,5 @@ export const api = {
   preferences: (token: string, categories: Category[]) => request<Profile>('/api/users/me/preferences', 'PUT', { categories }, token),
   restrictions: (token: string, items: Restriction[]) => request<Profile>('/api/users/me/restrictions', 'PUT', { items }, token),
   recommendations: (token: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`, 'GET', undefined, token),
+    select: (token: string, sessionId: string, menuId: number) => request<Selection>(`/api/recommendations/${encodeURIComponent(sessionId)}/select`, 'POST', { menuId }, token),
 };

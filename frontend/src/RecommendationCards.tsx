@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import type { MenuCard } from './types';
 import { CATEGORY_LABELS } from './catalog';
-export function RecommendationCards({ items }: { items: MenuCard[] }) {
+export function RecommendationCards({ items, onSelect, disabled = false }: { items: MenuCard[]; onSelect?: (item: MenuCard) => void; disabled?: boolean }) {
   const { width } = useWindowDimensions();
   const cardWidth = Math.max(160, Math.min(width, 540) - 48);
   const list = useRef<FlatList<MenuCard>>(null);
@@ -28,6 +28,7 @@ export function RecommendationCards({ items }: { items: MenuCard[] }) {
           <View style={s.divider} /><Text style={s.price}>{item.price.toLocaleString()}원</Text>
           <Text style={s.label}>등록된 식재료</Text><Text style={s.ingredients}>{item.ingredients.join(' · ')}</Text>
           <Text style={s.notice}>데이터 기준 필터 결과입니다. 실제 알레르겐·교차오염은 식당에 직접 확인하세요.</Text>
+                    {onSelect && <Pressable accessibilityRole="button" accessibilityLabel={`${item.menuName} 선택`} disabled={disabled} onPress={() => onSelect(item)} style={[s.select, disabled && s.disabled]}><Text style={s.selectText}>이 메뉴로 결정</Text></Pressable>}
         </View>
       </View>} />
     <View style={s.nav}>
@@ -46,5 +47,5 @@ const s = StyleSheet.create({
   price: { fontSize: 22, fontWeight: '800', color: '#203D2B', marginBottom: 20 }, label: { fontSize: 12, color: '#69786C', marginBottom: 7 },
   ingredients: { color: '#364B3D', lineHeight: 23 }, notice: { color: '#856443', fontSize: 11, lineHeight: 18, marginTop: 19 },
   nav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16 }, navButton: { padding: 13, backgroundColor: '#E6EEDC', borderRadius: 12 },
-  disabled: { opacity: 0.35 }, dots: { color: '#34704F' },
+    select: { marginTop: 18, backgroundColor: '#34704F', borderRadius: 14, padding: 15, alignItems: 'center' }, selectText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 }, disabled: { opacity: 0.35 }, dots: { color: '#34704F' },
 });

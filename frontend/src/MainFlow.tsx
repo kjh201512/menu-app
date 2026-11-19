@@ -5,8 +5,8 @@ import { api, ApiError } from './api';
 import { CATEGORY_LABELS, PRESET_INGREDIENTS } from './catalog';
 import { addRestriction, validCoordinates } from './profileRules';
 import { RecommendationCards } from './RecommendationCards';
-import type { Category, Profile, Recommendations, Restriction, RestrictionType, Session } from './types';
-type Screen = 'PREFERENCES' | 'RESTRICTIONS' | 'HOME' | 'RECOMMENDATIONS';
+import type { Category, MenuCard, Profile, Recommendations, Restriction, RestrictionType, Selection, Session } from './types';
+type Screen = 'PREFERENCES' | 'RESTRICTIONS' | 'HOME' | 'RECOMMENDATIONS' | 'SELECTED';
 export function MainFlow({ session, onLogout }: { session: Session; onLogout: () => Promise<void> }) {
   const [screen, setScreen] = useState<Screen>(session.destination === 'ONBOARDING' ? 'PREFERENCES' : 'HOME');
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -20,6 +20,7 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   const [busy, setBusy] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [recommendations, setRecommendations] = useState<Recommendations | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
   const [lat, setLat] = useState('37.5665');
   const [lng, setLng] = useState('126.9780');
   const lock = useRef(false);
@@ -71,6 +72,10 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   async function recommend() {
     if (!validCoordinates(lat, lng)) { setError('유효한 위도(-90~90)와 경도(-180~180)를 입력해 주세요.'); return; }
     await run(async () => { setRecommendations(null); const data = await api.recommendations(token, Number(lat), Number(lng)); setRecommendations(data); setScreen('RECOMMENDATIONS'); });
+  }
+  async function choose(item: MenuCard) {
+    if (!recommendations) return;
+    await run(async () => { const chosen = await api.select(token, recommendations.sessionId, item.menuId); setSelection(chosen); setScreen('SELECTED'); });
   }
   const button = (text: string, action: () => void, secondary = false, disabled = false) => <Pressable
     accessibilityRole="button" accessibilityLabel={text} disabled={busy || disabled} onPress={action}
@@ -127,8 +132,15 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
       {screen === 'RECOMMENDATIONS' && recommendations && <>
         <Text style={s.step}>US-07 · 반경 1 km 이내</Text><Text style={s.title}>이 메뉴는 어때요?</Text>
         <Text style={s.description}>{recommendations.message}</Text>
-        <RecommendationCards key={recommendations.sessionId} items={recommendations.items} />
+        <RecommendationCards key={recommendations.sessionId} items={recommendations.items} onSelect={item => { void choose(item); }} disabled={busy} />
         <Text style={s.hint}>식당·메뉴 정보가 완전하다고 표시된 후보만 추천합니다. 실제 안전을 보증하지 않습니다.</Text>
+        {button('홈으로 돌아가기', () => go('HOME'), true)}
+      </>}
+      {screen === 'SELECTED' && selection && <>
+        <Text style={s.step}>US-08 · 선택 완료</Text><Text style={s.title}>오늘은 이 메뉴로 결정!</Text>
+        <View style={s.panel}><Text style={s.label}>선택한 메뉴</Text><Text style={s.summary}>{selection.menuName}</Text>
+          <Text style={s.label}>식당</Text><Text style={s.summary}>{selection.restaurantName}</Text></View>
+        <Text style={s.hint}>식당 상세 정보와 지도 연결은 다음 단계(US-11)에서 이어집니다.</Text>
         {button('홈으로 돌아가기', () => go('HOME'), true)}
       </>}
       {busy && <ActivityIndicator color="#34704F" style={{ marginTop: 16 }} />}
