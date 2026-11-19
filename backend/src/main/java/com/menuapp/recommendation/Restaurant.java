@@ -10,6 +10,7 @@ public class Restaurant {
     @Column(nullable=false) private double longitude;
     @Enumerated(EnumType.STRING) @Column(nullable=false,length=30) private Category category;
     @Column(name="business_hours",length=100) private String businessHours;
+    @Column(name="image_url",length=200) private String imageUrl;
     protected Restaurant() {}
     public Restaurant(String externalPlaceId,String name,double latitude,double longitude,Category category) {
         this.externalPlaceId=externalPlaceId;this.name=name;this.latitude=latitude;this.longitude=longitude;this.category=category;this.businessHours="데모 정보";
@@ -22,6 +23,11 @@ public class Restaurant {
         this(externalPlaceId,name,latitude,longitude,category);
         this.businessHours=businessHours;
     }
+    public Restaurant(String externalPlaceId,String name,double latitude,double longitude,Category category,String businessHours,String imageUrl) {
+        this(externalPlaceId,name,latitude,longitude,category,businessHours);
+        this.imageUrl=imageUrl;
+    }
     public Category getCategory() { return category; }
     public String getBusinessHours() { return businessHours; }
+    public String getImageUrl() { return imageUrl; }
 }

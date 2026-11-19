@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { api, ApiError } from './api';
-import { CATEGORY_LABELS, PRESET_INGREDIENTS } from './catalog';
-import { addRestriction, validCoordinates } from './profileRules';
-import { RecommendationCards } from './RecommendationCards';
-import type { Category, MenuCard, Profile, Recommendations, Restriction, RestaurantDetail, RestrictionType, Selection, Session } from './types';
-type Screen = 'PREFERENCES' | 'RESTRICTIONS' | 'HOME' | 'RECOMMENDATIONS' | 'SELECTED';
+import { CATEGORY_EMOJI, CATEGORY_LABELS, CATEGORY_ORDER, PRESET_INGREDIENTS } from './catalog';
+import { addRestriction } from './profileRules';
+import { HomeScreen } from './home/HomeScreen';
+import { C } from './theme';
+import type { Category, Profile, Restriction, RestrictionType, Session } from './types';
+type Screen = 'PREFERENCES' | 'RESTRICTIONS' | 'HOME';
 export function MainFlow({ session, onLogout }: { session: Session; onLogout: () => Promise<void> }) {
   const [screen, setScreen] = useState<Screen>(session.destination === 'ONBOARDING' ? 'PREFERENCES' : 'HOME');
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -19,12 +20,6 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   const [reload, setReload] = useState(0);
   const [busy, setBusy] = useState(false);
   const [initializing, setInitializing] = useState(true);
-  const [recommendations, setRecommendations] = useState<Recommendations | null>(null);
-  const [selection, setSelection] = useState<Selection | null>(null);
-  const [detail, setDetail] = useState<RestaurantDetail | null>(null);
-  const [round, setRound] = useState(0);
-  const [lat, setLat] = useState('37.5665');
-  const [lng, setLng] = useState('126.9780');
   const lock = useRef(false);
   const token = session.accessToken;
   const logoutRef = useRef(onLogout);
@@ -61,34 +56,18 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   }
   async function savePreferences() {
     if (!categories.length) { setError('선호 카테고리를 1개 이상 선택해 주세요.'); return; }
-    await run(async () => { const saved = await api.preferences(token, categories); setProfile(saved); setCategories(saved.preferences); setRecommendations(null); setScreen('RESTRICTIONS'); });
+    await run(async () => { const saved = await api.preferences(token, categories); setProfile(saved); setCategories(saved.preferences); setScreen('RESTRICTIONS'); });
   }
   async function saveRestrictions(skip = false) {
     if (skip && items.length) { setError('등록한 항목이 있습니다. 삭제하거나 저장해 주세요.'); return; }
     if (!skip && custom.trim()) { setError('직접 입력한 식재료를 먼저 추가하거나 입력란을 비워 주세요.'); return; }
     await run(async () => {
       const saved = await api.restrictions(token, skip ? [] : items); setProfile(saved); setItems(saved.restrictions);
-      setCustom(''); setRecommendations(null); setScreen('HOME');
+      setCustom(''); setScreen('HOME');
     });
   }
-  async function recommend() {
-    if (!validCoordinates(lat, lng)) { setError('유효한 위도(-90~90)와 경도(-180~180)를 입력해 주세요.'); return; }
-    await run(async () => { setRecommendations(null); const data = await api.recommendations(token, Number(lat), Number(lng)); setRecommendations(data); setScreen('RECOMMENDATIONS'); });
-  }
-  async function choose(item: MenuCard) {
-    if (!recommendations) return;
-    await run(async () => {
-      const chosen = await api.select(token, recommendations.sessionId, item.menuId);
-      const info = await api.restaurant(token, chosen.restaurantId, Number(lat), Number(lng));
-      setSelection(chosen); setDetail(info); setScreen('SELECTED');
-    });
-  }
-  async function another() {
-    if (!recommendations) return;
-    await run(async () => {
-      const next = await api.reject(token, recommendations.sessionId, Number(lat), Number(lng));
-      setRecommendations(next); setRound(n => n + 1);
-    });
+  function editProfile() {
+    setCategories(profile?.preferences ?? []); setItems(profile?.restrictions ?? []); setCustom(''); go('PREFERENCES');
   }
   const button = (text: string, action: () => void, secondary = false, disabled = false) => <Pressable
     accessibilityRole="button" accessibilityLabel={text} disabled={busy || disabled} onPress={action}
@@ -97,92 +76,62 @@ export function MainFlow({ session, onLogout }: { session: Session; onLogout: ()
   const chip = (key: string, label: string, selected: boolean, action: () => void) => <Pressable key={key}
     accessibilityRole="checkbox" accessibilityState={{ checked: selected }} disabled={busy} onPress={action} style={[s.chip, selected && s.selectedChip]}>
     <Text style={[s.chipText, selected && s.selectedChipText]}>{label}</Text></Pressable>;
-  if (initializing) return <SafeAreaView style={s.center}><ActivityIndicator color="#34704F" /><Text style={s.hint}>저장된 취향을 불러오고 있어요.</Text></SafeAreaView>;
+  if (initializing) return <SafeAreaView style={s.center}><ActivityIndicator color={C.red} /><Text style={s.hint}>저장된 취향을 불러오고 있어요.</Text></SafeAreaView>;
   if (initialError) return <SafeAreaView style={s.page}><View style={s.body}><Text style={s.title}>설정을 불러오지 못했어요</Text><Text style={s.error}>{initialError}</Text>
     {button('다시 시도', () => setReload(n => n + 1))}{button('로그아웃', () => { void onLogout(); }, true)}</View></SafeAreaView>;
-  return <SafeAreaView style={s.page}><StatusBar style="dark" />
+  if (screen === 'HOME' && profile) return <HomeScreen token={token} email={session.user.email} profile={profile}
+    onEditProfile={editProfile} onLogout={() => { void onLogout(); }} onUnauthorized={() => { void logoutRef.current(); }} />;
+  return <SafeAreaView style={s.page}><StatusBar style="light" />
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.body}>
       <View style={s.header}><Text style={s.brand}>오늘 한 끼</Text><Pressable disabled={busy} onPress={() => { void onLogout(); }} accessibilityRole="button"><Text style={s.link}>로그아웃</Text></Pressable></View>
       <Text style={s.account}>{session.user.email}</Text>
+      <View style={s.progress}><View style={[s.progressBar, { width: screen === 'PREFERENCES' ? '50%' : '100%' }]} /></View>
       {screen === 'PREFERENCES' && <>
-        <Text style={s.step}>STEP 01 / 02 · US-02</Text><Text style={s.title}>어떤 음식을
-좋아하세요?</Text>
+        <Text style={s.step}>STEP 01 / 02</Text><Text style={s.title}>어떤 음식을{'\n'}좋아하세요?</Text>
         <Text style={s.description}>1개 이상 선택해 주세요. 선택한 카테고리를 추천 순위에 우선 반영해요.</Text>
-        <View style={s.wrap}>{(Object.keys(CATEGORY_LABELS) as Category[]).map(c => chip(c, CATEGORY_LABELS[c], categories.includes(c), () => setCategories(old => old.includes(c) ? old.filter(x => x !== c) : [...old, c])))}</View>
+        <View style={s.wrap}>{CATEGORY_ORDER.map(c => chip(c, `${CATEGORY_EMOJI[c]}  ${CATEGORY_LABELS[c]}`, categories.includes(c), () => setCategories(old => old.includes(c) ? old.filter(x => x !== c) : [...old, c])))}</View>
         {button('저장하고 다음', () => { void savePreferences(); })}
         {profile?.onboardingCompleted && button('홈으로', () => { setCategories(profile.preferences); go('HOME'); }, true)}
       </>}
       {screen === 'RESTRICTIONS' && <>
-        <Text style={s.step}>STEP 02 / 02 · US-03</Text><Text style={s.title}>못 먹는 재료가
-있나요?</Text>
-        <Text style={s.description}>알레르기와 비선호 모두 추천에서 제외해요. 목록에서 고르거나 직접 입력하세요.</Text>
+        <Text style={s.step}>STEP 02 / 02</Text><Text style={s.title}>못 먹는 재료가{'\n'}있나요?</Text>
+        <Text style={s.description}>알레르기와 비선호 모두 추천과 지도에서 제외해요. 목록에서 고르거나 직접 입력하세요.</Text>
         <View style={s.wrap}>{chip('ALLERGY', '알레르기', type === 'ALLERGY', () => setType('ALLERGY'))}{chip('DISLIKE', '비선호', type === 'DISLIKE', () => setType('DISLIKE'))}</View>
         <Text style={s.label}>사전 정의 목록 · 누르면 추가</Text>
-        <View style={s.wrap}>{PRESET_INGREDIENTS.map(i => <Pressable key={i} disabled={busy} onPress={() => add(i)} style={s.preset} accessibilityRole="button"><Text style={s.chipText}>+ {i}</Text></Pressable>)}</View>
-        <Text style={s.label}>직접 입력</Text><View style={s.inline}><TextInput value={custom} editable={!busy} onChangeText={setCustom} placeholder="예: 고수" accessibilityLabel="식재료 직접 입력" style={[s.input, { flex: 1 }]} maxLength={100} onSubmitEditing={() => add(custom)} />
+        <View style={s.wrap}>{PRESET_INGREDIENTS.map(i => <Pressable key={i} disabled={busy} onPress={() => add(i)} style={s.preset} accessibilityRole="button"><Text style={s.presetText}>+ {i}</Text></Pressable>)}</View>
+        <Text style={s.label}>직접 입력</Text><View style={s.inline}><TextInput value={custom} editable={!busy} onChangeText={setCustom} placeholder="예: 고수" placeholderTextColor={C.faint} accessibilityLabel="식재료 직접 입력" style={[s.input, { flex: 1 }]} maxLength={100} onSubmitEditing={() => add(custom)} />
           <Pressable disabled={busy} onPress={() => add(custom)} style={s.add} accessibilityRole="button"><Text style={s.buttonText}>추가</Text></Pressable></View>
         <Text style={s.label}>등록할 식재료 {items.length}개</Text>
-        {items.map(item => <View key={item.ingredientName} style={s.item}><View style={{ flex: 1 }}><Text style={s.itemName}>{item.ingredientName}</Text><Text style={s.hint}>{item.type === 'ALLERGY' ? '알레르기' : '비선호'}</Text></View>
+        {items.map(item => <View key={item.ingredientName} style={s.item}><View style={{ flex: 1 }}><Text style={s.itemName}>{item.ingredientName}</Text><Text style={s.itemType}>{item.type === 'ALLERGY' ? '알레르기' : '비선호'}</Text></View>
           <Pressable disabled={busy} accessibilityRole="button" accessibilityLabel={`${item.ingredientName} 삭제`} onPress={() => setItems(old => old.filter(i => i.ingredientName !== item.ingredientName))}><Text style={s.link}>삭제</Text></Pressable></View>)}
         {!items.length && <Text style={s.hint}>등록된 항목이 없어요. 건너뛰어도 괜찮아요.</Text>}
         {button('저장하고 홈으로', () => { void saveRestrictions(); })}
         {button('등록 없이 건너뛰기', () => { void saveRestrictions(true); }, true, items.length > 0 || !!custom.trim())}
         {button('선호 카테고리로 돌아가기', () => { setCustom(''); go('PREFERENCES'); }, true)}
       </>}
-      {screen === 'HOME' && <>
-        <Text style={s.step}>나에게 맞는 세 가지 메뉴</Text><Text style={s.title}>오늘은 무엇을
-먹을까요?</Text>
-        <View style={s.panel}><Text style={s.label}>저장된 선호</Text><Text style={s.summary}>{profile?.preferences.map(c => CATEGORY_LABELS[c]).join(' · ') || '아직 설정하지 않았어요'}</Text>
-          <Text style={s.label}>추천에서 제외할 식재료</Text><Text style={s.summary}>{profile?.restrictions.map(i => i.ingredientName).join(' · ') || '없음'}</Text></View>
-        <Text style={s.label}>시연 기준 좌표 · 실제 내 위치가 아닙니다</Text>
-        <Text style={s.hint}>demo 프로필의 가상 데이터는 서울시청 인근 좌표에 있어요. US-05 GPS·외부 식당 API는 미구현입니다.</Text>
-        <TextInput value={lat} editable={!busy} onChangeText={setLat} placeholder="위도" accessibilityLabel="기준 위도" keyboardType="numbers-and-punctuation" style={s.input} />
-        <TextInput value={lng} editable={!busy} onChangeText={setLng} placeholder="경도" accessibilityLabel="기준 경도" keyboardType="numbers-and-punctuation" style={s.input} />
-        {button('필터 적용 메뉴 보기', () => { void recommend(); })}
-        {button('선호·제한 식재료 설정', () => { setCategories(profile?.preferences ?? []); setItems(profile?.restrictions ?? []); go('PREFERENCES'); }, true)}
-      </>}
-      {screen === 'RECOMMENDATIONS' && recommendations && <>
-        <Text style={s.step}>US-07 · 반경 1 km 이내</Text><Text style={s.title}>이 메뉴는 어때요?</Text>
-        <Text style={s.description}>{recommendations.message}</Text>
-        <RecommendationCards key={`${recommendations.sessionId}-${round}`} items={recommendations.items} onSelect={item => { void choose(item); }} disabled={busy} />
-        {button('다른 메뉴 보기', () => { void another(); }, false, recommendations.count === 0)}
-        <Text style={s.hint}>식당·메뉴 정보가 완전하다고 표시된 후보만 추천합니다. 실제 안전을 보증하지 않습니다.</Text>
-        {button('홈으로 돌아가기', () => go('HOME'), true)}
-      </>}
-      {screen === 'SELECTED' && selection && <>
-        <Text style={s.step}>US-08 · US-11 · 식당 상세</Text><Text style={s.title}>오늘은 이 메뉴로 결정!</Text>
-        <View style={s.panel}>
-          <Text style={s.label}>선택한 메뉴</Text><Text style={s.summary}>{selection.menuName}</Text>
-          <Text style={s.label}>식당</Text><Text style={s.summary}>{selection.restaurantName}{detail ? ` · ${CATEGORY_LABELS[detail.category]}` : ''}</Text>
-          <Text style={s.label}>거리</Text><Text style={s.summary}>{detail?.distanceMeters != null ? `${detail.distanceMeters.toLocaleString()} m · 직선거리` : '정보 없음'}</Text>
-          <Text style={s.label}>영업시간</Text><Text style={s.summary}>{detail?.businessHours ?? '정보 없음'}</Text>
-          <Text style={[s.status, detail?.openStatus === 'OPEN' ? s.open : detail?.openStatus === 'CLOSED' ? s.closed : s.unknown]}>{detail?.openStatusLabel ?? '정보 없음'}</Text>
-          <Text style={s.label}>대표 메뉴</Text><Text style={s.summary}>{detail?.signatureMenus.length ? detail.signatureMenus.join(' · ') : '정보 없음'}</Text>
-        </View>
-        {detail && button('지도에서 위치 보기', () => { void Linking.openURL(detail.mapUrl); })}
-        {button('홈으로 돌아가기', () => go('HOME'), true)}
-      </>}
-      {busy && <ActivityIndicator color="#34704F" style={{ marginTop: 16 }} />}
+      {busy && <ActivityIndicator color={C.red} style={{ marginTop: 16 }} />}
       {!!error && <Text style={s.error} accessibilityRole="alert">{error}</Text>}
     </ScrollView></KeyboardAvoidingView>
   </SafeAreaView>;
 }
 const s = StyleSheet.create({
-  page: { flex: 1, backgroundColor: '#F6F8F3' }, center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F6F8F3' },
-  body: { padding: 24, paddingTop: 30, paddingBottom: 50, width: '100%', maxWidth: 540, alignSelf: 'center', flexGrow: 1 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, brand: { fontWeight: '800', fontSize: 21, color: '#24523A' },
-  account: { color: '#718072', fontSize: 12, marginTop: 10, marginBottom: 28 }, link: { color: '#34704F', fontWeight: '700', padding: 8 },
-  step: { color: '#5B7B58', fontSize: 12, fontWeight: '700', marginBottom: 15 }, title: { fontSize: 29, lineHeight: 40, fontWeight: '800', color: '#203D2B', marginBottom: 13 },
-  description: { color: '#647467', lineHeight: 23, fontSize: 14, marginBottom: 23 }, wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 20 },
-  chip: { borderColor: '#D6E0D1', borderWidth: 1, backgroundColor: '#FFFFFF', borderRadius: 18, paddingVertical: 13, paddingHorizontal: 18 },
-  selectedChip: { borderColor: '#34704F', backgroundColor: '#34704F' }, chipText: { color: '#3C5945', fontSize: 14 }, selectedChipText: { color: '#FFFFFF', fontWeight: '700' },
-  button: { backgroundColor: '#34704F', borderRadius: 14, padding: 17, alignItems: 'center', marginTop: 13 }, buttonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
-  secondary: { backgroundColor: '#E6EEDC' }, secondaryText: { color: '#24523A' }, dim: { opacity: 0.45 },
-  label: { color: '#3C5945', fontSize: 13, fontWeight: '700', marginBottom: 10, marginTop: 14 }, hint: { color: '#778277', fontSize: 12, lineHeight: 20, marginTop: 5, marginBottom: 8 },
-  preset: { paddingVertical: 9, paddingHorizontal: 13, borderRadius: 14, backgroundColor: '#E9EFE4' },
-  input: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D7E1D2', padding: 14, borderRadius: 12, marginBottom: 10, color: '#233D2B', fontSize: 15 },
-  inline: { flexDirection: 'row', gap: 10 }, add: { backgroundColor: '#34704F', borderRadius: 12, paddingHorizontal: 18, height: 50, justifyContent: 'center' },
-  item: { padding: 13, backgroundColor: '#FFFFFF', borderRadius: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 8 }, itemName: { fontWeight: '700', color: '#284833', fontSize: 15 },
-  error: { color: '#AE3D30', backgroundColor: '#FBEBE6', padding: 13, borderRadius: 12, lineHeight: 22, marginTop: 18 }, panel: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 20 }, summary: { color: '#4D6655', lineHeight: 24, marginBottom: 8 },   status: { alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 10, fontSize: 13, fontWeight: '700', overflow: 'hidden', marginBottom: 6 }, open: { backgroundColor: '#E3F1E4', color: '#2F6B3E' }, closed: { backgroundColor: '#FBEBE6', color: '#AE3D30' }, unknown: { backgroundColor: '#EEF0EC', color: '#6A746D' },
+  page: { flex: 1, backgroundColor: C.bg }, center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: C.bg },
+  body: { padding: 24, paddingTop: 30, paddingBottom: 50, width: '100%', maxWidth: 560, alignSelf: 'center', flexGrow: 1 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, brand: { fontWeight: '900', fontSize: 22, color: C.red },
+  account: { color: C.faint, fontSize: 12, marginTop: 8, marginBottom: 20 }, link: { color: C.red, fontWeight: '700', padding: 8 },
+  progress: { height: 4, backgroundColor: C.surface2, borderRadius: 2, marginBottom: 26, overflow: 'hidden' }, progressBar: { height: 4, backgroundColor: C.red },
+  step: { color: C.red, fontSize: 12, fontWeight: '800', marginBottom: 12, letterSpacing: 1 }, title: { fontSize: 30, lineHeight: 40, fontWeight: '800', color: C.text, marginBottom: 12 },
+  description: { color: C.sub, lineHeight: 23, fontSize: 14, marginBottom: 22 }, wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 18 },
+  chip: { borderColor: C.line, borderWidth: 1, backgroundColor: C.surface, borderRadius: 999, paddingVertical: 12, paddingHorizontal: 18 },
+  selectedChip: { borderColor: C.red, backgroundColor: C.red }, chipText: { color: C.sub, fontSize: 14, fontWeight: '600' }, selectedChipText: { color: C.white, fontWeight: '800' },
+  button: { backgroundColor: C.red, borderRadius: 14, padding: 17, alignItems: 'center', marginTop: 12 }, buttonText: { color: C.white, fontWeight: '800', fontSize: 15 },
+  secondary: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, secondaryText: { color: C.text }, dim: { opacity: 0.45 },
+  label: { color: C.text, fontSize: 13, fontWeight: '700', marginBottom: 10, marginTop: 12 }, hint: { color: C.sub, fontSize: 12, lineHeight: 20, marginTop: 6, marginBottom: 8 },
+  preset: { paddingVertical: 9, paddingHorizontal: 13, borderRadius: 12, backgroundColor: C.surface2, borderWidth: 1, borderColor: C.line }, presetText: { color: C.text, fontSize: 13 },
+  input: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, padding: 14, borderRadius: 12, marginBottom: 10, color: C.text, fontSize: 15 },
+  inline: { flexDirection: 'row', gap: 10 }, add: { backgroundColor: C.red, borderRadius: 12, paddingHorizontal: 18, height: 50, justifyContent: 'center' },
+  item: { padding: 13, backgroundColor: C.surface, borderRadius: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 8, borderWidth: 1, borderColor: C.line },
+  itemName: { fontWeight: '700', color: C.text, fontSize: 15 }, itemType: { color: C.sub, fontSize: 12, marginTop: 3 },
+  error: { color: C.white, backgroundColor: C.redSoft, borderColor: C.red, borderWidth: 1, padding: 13, borderRadius: 12, lineHeight: 22, marginTop: 18 },
 });

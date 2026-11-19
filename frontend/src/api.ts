@@ -1,4 +1,4 @@
-import type { AuthResponse, User, Category, Restriction, Profile, Recommendations, Selection, RestaurantDetail } from './types';
+import type { AuthResponse, User, Category, Restriction, Profile, Recommendations, Selection, RestaurantDetail, Nearby } from './types';
 const rawBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
 const baseUrl = rawBaseUrl?.replace(/\/$/, '');
 export class ApiError extends Error {
@@ -29,6 +29,12 @@ async function request<T>(path: string, method: 'POST' | 'GET' | 'PUT', body?: u
     throw new ApiError(0, 'NETWORK_ERROR', '서버에 연결할 수 없습니다. 네트워크와 API 주소를 확인해 주세요.');
   } finally { clearTimeout(timer); }
 }
+export function assetUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (/^https?:\/\//.test(path)) return path;
+  return baseUrl ? baseUrl + path : null;
+}
+const q = encodeURIComponent;
 export const api = {
   signup: (email: string, password: string) => request<AuthResponse>('/api/auth/signup', 'POST', { email, password }),
   login: (email: string, password: string) => request<AuthResponse>('/api/auth/login', 'POST', { email, password }),
@@ -36,8 +42,10 @@ export const api = {
   profile: (token: string) => request<Profile>('/api/users/me/profile', 'GET', undefined, token),
   preferences: (token: string, categories: Category[]) => request<Profile>('/api/users/me/preferences', 'PUT', { categories }, token),
   restrictions: (token: string, items: Restriction[]) => request<Profile>('/api/users/me/restrictions', 'PUT', { items }, token),
-  recommendations: (token: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`, 'GET', undefined, token),
-  select: (token: string, sessionId: string, menuId: number) => request<Selection>(`/api/recommendations/${encodeURIComponent(sessionId)}/select`, 'POST', { menuId }, token),
-  restaurant: (token: string, restaurantId: number, lat: number, lng: number) => request<RestaurantDetail>(`/api/restaurants/${restaurantId}?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`, 'GET', undefined, token),
-  reject: (token: string, sessionId: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations/${encodeURIComponent(sessionId)}/reject`, 'POST', { lat, lng }, token),
+  recommendations: (token: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations?lat=${q(lat)}&lng=${q(lng)}`, 'GET', undefined, token),
+  select: (token: string, sessionId: string, menuId: number) => request<Selection>(`/api/recommendations/${q(sessionId)}/select`, 'POST', { menuId }, token),
+  reject: (token: string, sessionId: string, lat: number, lng: number) => request<Recommendations>(`/api/recommendations/${q(sessionId)}/reject`, 'POST', { lat, lng }, token),
+  restaurant: (token: string, restaurantId: number, lat: number, lng: number) => request<RestaurantDetail>(`/api/restaurants/${restaurantId}?lat=${q(lat)}&lng=${q(lng)}`, 'GET', undefined, token),
+  nearby: (token: string, lat: number, lng: number, category?: Category | null) =>
+    request<Nearby>(`/api/restaurants/nearby?lat=${q(lat)}&lng=${q(lng)}&radius=1000${category ? `&category=${category}` : ''}`, 'GET', undefined, token),
 };

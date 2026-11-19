@@ -1,5 +1,7 @@
 package com.menuapp.restaurant;
 
+import com.menuapp.profile.Category;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -12,6 +14,15 @@ public class RestaurantController {
 
     public RestaurantController(RestaurantService restaurants) {
         this.restaurants = restaurants;
+    }
+
+    @GetMapping("/api/restaurants/nearby")
+    public RestaurantService.Nearby nearby(@AuthenticationPrincipal Long userId,
+                                           @RequestParam("lat") double lat,
+                                           @RequestParam("lng") double lng,
+                                           @RequestParam(value = "radius", defaultValue = "1000") int radius,
+                                           @RequestParam(value = "category", required = false) Category category) {
+        return restaurants.nearby(userId, lat, lng, radius, category);
     }
 
     @GetMapping("/api/restaurants/{id}")

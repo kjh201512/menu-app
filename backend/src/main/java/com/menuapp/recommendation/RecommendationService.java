@@ -10,7 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RecommendationService {
     public record Card(Long menuId,Long restaurantId,String menuName,String restaurantName,Category category,
-                       int price,long distanceMeters,boolean preferred,List<String> ingredients) {}
+                       int price,long distanceMeters,boolean preferred,List<String> ingredients,String imageUrl) {}
     public record Result(String sessionId,int count,int availableCount,String message,List<Card> items) {}
     public record Selection(String sessionId, Long menuId, Long restaurantId, String menuName, String restaurantName) {}
     private record Candidate(Menu menu,double distance,double weight) {}
@@ -58,7 +58,7 @@ public class RecommendationService {
         logs.saveAll(selected.stream().map(c->new RecommendationLog(user,c.menu(),sessionId)).toList());
         var cards=selected.stream().map(c->new Card(c.menu().getId(),c.menu().getRestaurant().getId(),c.menu().getName(),
             c.menu().getRestaurant().getName(),c.menu().getCategory(),c.menu().getPrice(),Math.round(c.distance()),
-            weights.containsKey(c.menu().getCategory()),c.menu().ingredientNames())).toList();
+            weights.containsKey(c.menu().getCategory()),c.menu().ingredientNames(),c.menu().getRestaurant().getImageUrl())).toList();
         return new Result(sessionId,cards.size(),candidates.size(),message(cards.size(),!excluded.isEmpty()),cards);
     }
     private String message(int count,boolean reroll) {
